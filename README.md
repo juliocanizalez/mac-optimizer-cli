@@ -114,7 +114,9 @@ sections depend on higher ones; the entry point at J calls everything above it.
 ```
 [A] Preamble         shebang, strict mode, VERSION constant
 [B] Global State     all mutable runtime variables and module arrays
-[C] UI Primitives    ANSI constants, terminal helpers, menu renderer, event loop
+[C] UI Primitives    ANSI constants, terminal helpers, menu renderer, event loop,
+                     pick-list widget (_pick_list), spinner (_spin_start/_spin_stop),
+                     scrollable log viewer (_scrollable_log)
 [D] Size Helpers     size_kb, human_size, calculate_all_sizes
 [E] Sudo             needs_sudo, acquire_sudo, heartbeat background process
 [F] Safe Delete      is_blocked_path, safe_delete
@@ -311,25 +313,16 @@ This module performs three tasks in sequence:
 
 ### Module 6 — App Uninstaller
 
-Sudo required: partial (only when support files exist in system-level directories). Default: OFF.
+Sudo required: no. Default: OFF.
 
-The module runs an interactive loop that repeats until the user declines to uninstall another app:
+1. Enumerate all `.app` bundles under `/Applications/` and `~/Applications/`, showing each with
+   its disk size.
+2. A scrollable checkbox list (`_pick_list`) lets the user select zero or more apps with arrow
+   keys and Space; `a` selects all, `n` deselects all, Enter confirms, `q` cancels.
+3. For each selected app a spinner animates while `safe_delete` removes the `.app` bundle.
+4. A summary line reports how many apps were removed.
 
-1. Enumerate all `.app` bundles under `/Applications/` and `~/Applications/`.
-2. User selects one by number.
-3. The bundle identifier is read from `Contents/Info.plist` via `defaults read`. If it cannot be
-   read, the search falls back to the application name only.
-4. `find_app_files BUNDLE_ID APP_NAME` searches these directories for matching entries and prints
-   each found path with a `sudo:` prefix when the path falls under a system-protected directory:
-   - User directories: `Application Support`, `Preferences`, `Caches`, `Logs`,
-     `Saved Application State`, `Containers`, `Group Containers`, `LaunchAgents`
-   - System directories (sudo-prefixed): `/Library/LaunchDaemons`,
-     `/Library/Application Support`, `/Library/Preferences`
-   - Matching strategy: exact bundle-id name, exact bundle-id name with `.plist` suffix, prefix
-     glob `bundle-id*` (catches helper agents), and exact app name
-5. All found files are shown with individual sizes and a total.
-6. A single confirmation prompt covers the `.app` bundle and all related files together.
-7. Related files are deleted first; the `.app` bundle is deleted last.
+In non-TTY mode the list falls back to the same number-entry prompt used in v1.0.
 
 ### Module 7 — Orphaned Data
 
@@ -357,8 +350,9 @@ dot) and is not in the installed set are collected:
 Entries matching `com.apple.*` are always skipped; macOS manages those entries itself.
 
 **Step 3 — Interactive selection.**
-Found orphans are shown in a numbered list with sizes. The user may enter space-separated numbers,
-`a` for all, or press Enter to skip. A single confirmation prompt precedes deletion.
+Found orphans are shown in a scrollable checkbox list (`_pick_list`) with sizes. The user
+navigates with arrow keys, toggles items with Space, and confirms with Enter. A spinner animates
+per-item deletion. In non-TTY mode the list falls back to the number-entry prompt.
 
 ---
 
@@ -425,6 +419,28 @@ Returns 0 (true, meaning blocked) for paths that must never be deleted:
 
 Trailing slashes are stripped before comparison. Any path not matching a blocked pattern returns 1
 (not blocked) and is allowed to proceed through `safe_delete`.
+
+### `_pick_list TITLE VIEWPORT_HEIGHT ITEM...`
+
+Renders a scrollable, keyboard-driven checkbox list inside a `┌─┐` bordered box of fixed height
+(`VIEWPORT_HEIGHT + 4` lines). Keys: ↑↓ move cursor, Space toggles, `a` selects all, `n`
+deselects all, Enter confirms, `q` cancels (returns exit code 1).
+
+On return, the selected indices are available as newline-separated integers in `_PICK_RESULT`.
+When stdin or stdout is not a TTY the function falls back to the existing number-entry prompt.
+
+### `_spin_start MSG` / `_spin_stop 0|1 [LABEL]`
+
+`_spin_start` launches a Braille-spinner (`⠋⠙⠹…`) in a background subshell that overwrites the
+current line at 10 fps. `_spin_stop` kills the spinner, clears the line, and prints `✓ LABEL` or
+`✗ LABEL` depending on the exit-code argument. In non-TTY mode `_spin_start` prints a plain
+`… MSG` line and `_spin_stop` prints the result on the next line.
+
+### `_scrollable_log TITLE HEIGHT`
+
+Renders an interactive `╔═╗` box of fixed height that scrolls through `CLEAN_LOG` with ↑↓ arrow
+keys. Shown by `print_summary` after a run completes (TTY only); falls back to a plain list in
+non-TTY mode.
 
 ### `find_app_files BUNDLE_ID APP_NAME`
 
@@ -580,13 +596,17 @@ Paths that are explicitly allowed even though they might appear related to block
 
 ## Non-Interactive Mode
 
-The script auto-detects a non-TTY environment at two points:
+The script auto-detects a non-TTY environment at three points:
 
 1. **`run_menu`** — checks `[[ ! -t 0 ]] || [[ ! -t 1 ]]`. If either stdin or stdout is not a
    terminal, the menu is skipped entirely and the default `MODULE_SELECTED` values are used. A
    single informational line is printed instead of the interactive UI.
 
-2. **`_confirm`** — when `AUTO_YES=1` the function never reads from stdin. When combined with a
+2. **`_pick_list`** — same TTY check. Falls back to a numbered list with a single-line
+   number-entry prompt (`1 3 5`, `a` for all, Enter to skip). Modules 6 and 7 use this path
+   automatically when running non-interactively.
+
+3. **`_confirm`** — when `AUTO_YES=1` the function never reads from stdin. When combined with a
    non-TTY stdin, this ensures the script runs to completion without blocking on any read.
 
 The combination of `--dry-run --yes` with piped or redirected output is the recommended approach
