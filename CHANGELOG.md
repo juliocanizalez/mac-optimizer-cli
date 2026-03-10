@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-03-10
+
+### Added
+
+- **Scrollable checkbox list** (`_pick_list`) for modules 6 and 7 — arrow-key navigation, Space
+  to toggle, `a` all, `n` none, Enter confirm, `q` cancel; falls back to number-entry in non-TTY
+- **Per-operation spinner** (`_spin_start` / `_spin_stop`) — Braille animation during deletions
+  with `✓` / `✗` result line; plain `… / ✓ / ✗` output in non-TTY
+- **Scrollable summary log** (`_scrollable_log`) — after a run, `CLEAN_LOG` entries are shown in
+  an interactive scrollable box (↑↓ to scroll, Enter/q to close); falls back to plain list in
+  non-TTY
+
+### Changed
+
+- **Module 6 — App Uninstaller**: replaced single-number loop with multi-select checkbox list;
+  each selected app is removed with a spinner
+- **Module 7 — Orphaned Data**: replaced space-separated number prompt with multi-select checkbox
+  list; each selected item is removed with a spinner
+- **`print_summary`**: log section replaced by `_scrollable_log` viewer on TTY
+
 ## [1.0.0] - 2026-03-09
 
 ### Added
