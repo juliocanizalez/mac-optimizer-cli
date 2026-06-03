@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: bash build.sh
+
+      - name: Syntax check
+        run: bash -n mac-optimizer.sh
+
+      - name: Smoke test
+        run: ./mac-optimizer.sh --dry-run --yes
+
+      - name: Compute SHA256
+        id: sha
+        run: echo "sha256=$(shasum -a 256 mac-optimizer.sh | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: mac-optimizer.sh
+          generate_release_notes: true
+          body: |
+            ## Install via Homebrew
+            ```
+            brew tap juliocanizalez/tap
+            brew install mac-optimizer
+            ```
+
+            **SHA256:** `${{ steps.sha.outputs.sha256 }}`
+
+      - name: Update Homebrew tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          SHA256="${{ steps.sha.outputs.sha256 }}"
+          TAP_REPO="juliocanizalez/homebrew-tap"
+
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${TAP_REPO}.git" tap-repo
+          cd tap-repo
+
+          sed -i '' "s|version \".*\"|version \"${VERSION}\"|" Formula/mac-optimizer.rb
+          sed -i '' "s|sha256 \".*\"|sha256 \"${SHA256}\"|" Formula/mac-optimizer.rb
+
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add Formula/mac-optimizer.rb
+          git diff --cached --quiet || git commit -m "mac-optimizer ${VERSION}"
+          git push
