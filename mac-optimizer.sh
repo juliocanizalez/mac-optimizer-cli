@@ -3,7 +3,7 @@
 # Usage: ./mac-optimizer.sh [--dry-run] [--yes] [--help]
 set -uo pipefail
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 
 # ============================================================================
 # [B] GLOBAL STATE
@@ -31,6 +31,91 @@ MODULE_SIZES=("" "" "" "" "" "" "" "")
 
 BYTES_FREED_TOTAL=0
 declare -a CLEAN_LOG=()
+
+# ============================================================================
+# [B2] CONFIG
+# ============================================================================
+
+CONFIG_PATH="${HOME}/.config/mac-optimizer/config.toml"
+
+# _cfg_get KEY FILE — print the raw value for a TOML key, or empty string
+_cfg_get() {
+  local key="$1" file="$2"
+  grep -E "^\s*${key}\s*=" "$file" 2>/dev/null \
+    | sed 's/[^=]*=\s*//' | tr -d '"' | tr -d "'" | tr -d ' ' | head -1
+}
+
+# _cfg_bool KEY FILE — echo 1 if true/yes/1, echo 0 if false/no/0, echo "" if absent
+_cfg_bool() {
+  local val
+  val=$(_cfg_get "$1" "$2")
+  case "$val" in
+    true|yes|1)  echo 1 ;;
+    false|no|0)  echo 0 ;;
+    *)           echo "" ;;
+  esac
+}
+
+# config_load — read ~/.config/mac-optimizer/config.toml and apply values.
+# Hard-coded defaults (globals.sh) are applied first; this overrides them;
+# CLI flags (parse_args) will override this in turn.
+config_load() {
+  [[ -f "$CONFIG_PATH" ]] || return 0
+
+  local val
+
+  # [defaults] section
+  val=$(_cfg_bool "dry_run"  "$CONFIG_PATH"); [[ -n "$val" ]] && DRY_RUN=$val
+  val=$(_cfg_bool "auto_yes" "$CONFIG_PATH"); [[ -n "$val" ]] && AUTO_YES=$val
+
+  # [modules] section — map names to MODULE_SELECTED indices
+  local -a _MODULE_KEYS=(
+    user_caches
+    system_logs
+    temp_files
+    developer_junk
+    browser_data
+    system_maintenance
+    app_uninstaller
+    orphaned_data
+  )
+  local i
+  for (( i=0; i<${#_MODULE_KEYS[@]}; i++ )); do
+    val=$(_cfg_bool "${_MODULE_KEYS[$i]}" "$CONFIG_PATH")
+    [[ -n "$val" ]] && MODULE_SELECTED[$i]=$val
+  done
+}
+
+# config_init — write a default config.toml (errors if it already exists)
+config_init() {
+  if [[ -f "$CONFIG_PATH" ]]; then
+    printf "Config already exists: %s\n" "$CONFIG_PATH"
+    printf "Delete it first to regenerate.\n"
+    exit 1
+  fi
+  mkdir -p "$(dirname "$CONFIG_PATH")"
+  cat > "$CONFIG_PATH" <<'EOF'
+# mac-optimizer configuration
+# Edit to set your defaults. CLI flags always take precedence.
+# Location: ~/.config/mac-optimizer/config.toml
+
+[modules]
+# Modules enabled by default when the TUI opens
+user_caches        = true
+system_logs        = true
+temp_files         = true
+developer_junk     = false
+browser_data       = false
+system_maintenance = true
+app_uninstaller    = false
+orphaned_data      = false
+
+[defaults]
+dry_run  = false
+auto_yes = false
+EOF
+  printf "Config written to: %s\n" "$CONFIG_PATH"
+}
 
 # ============================================================================
 # [C] UI PRIMITIVES
@@ -781,10 +866,6 @@ safe_delete() {
   done
 }
 
-# ============================================================================
-# [G] MODULE FUNCTIONS
-# ============================================================================
-
 # ---------- Module 0: User Caches ----------
 module_0_clean() {
   printf "${BOLD}== User Caches ==${NC}\n"
@@ -1353,16 +1434,12 @@ run_selected_modules() {
 
   for (( i=0; i<${#MODULE_SELECTED[@]}; i++ )); do
     [[ "${MODULE_SELECTED[$i]}" -eq 1 ]] || continue
-    case $i in
-      0) module_0_clean ;;
-      1) module_1_clean ;;
-      2) module_2_clean ;;
-      3) module_3_clean ;;
-      4) module_4_clean ;;
-      5) module_5_clean ;;
-      6) module_6_clean ;;
-      7) module_7_clean ;;
-    esac
+    local fn="module_${i}_clean"
+    if declare -f "$fn" > /dev/null 2>&1; then
+      "$fn"
+    else
+      printf "${YELLOW}Warning: no handler for module %d${NC}\n" "$i"
+    fi
     printf "\n"
   done
 }
@@ -1416,41 +1493,70 @@ print_summary() {
 # ============================================================================
 
 print_help() {
+  local cmd
+  cmd="$(basename "$0")"
   cat <<EOF
 mac-optimizer-cli v${VERSION}
-A CLI optimizer for macOS
+Free up disk space on macOS through an interactive TUI checklist.
 
-Usage: $(basename "$0") [OPTIONS]
+USAGE
+  ${cmd} [OPTIONS]
 
-Options:
-  -n, --dry-run   Preview what would be deleted (no changes made)
-  -y, --yes       Skip all confirmation prompts
-  -h, --help      Show this help message
+HOW IT WORKS
+  1. Sizes are calculated for each cleanup module.
+  2. An interactive menu lets you toggle modules on/off with arrow keys
+     and Space, then press Enter to confirm.
+  3. sudo is acquired once (if needed) and kept alive for the run.
+  4. Selected modules execute and log every deletion.
+  5. A summary shows total space freed.
 
-Modules (default selections shown):
+  Run with --dry-run to preview all deletions without touching anything.
+  Defaults (which modules start ON) can be persisted in a config file —
+  see --init-config below.
+
+OPTIONS
+  -n, --dry-run      Preview what would be deleted (no changes made)
+  -y, --yes          Skip all confirmation prompts (use with --dry-run for CI)
+  -h, --help         Show this help message
+      --init-config  Write default config to ~/.config/mac-optimizer/config.toml
+      --config-path  Print the config file path and exit
+
+MODULES
+  Default selection is shown in brackets. Toggle freely in the TUI, or set
+  persistent defaults via the config file (--init-config).
+
   [ON]  0. User Caches         ~/Library/Caches
   [ON]  1. System Logs         ~/Library/Logs, /var/log rotated logs
   [ON]  2. Temp Files          /tmp, \$TMPDIR
   [OFF] 3. Developer Junk      Xcode DerivedData, npm/pip/gradle caches
   [OFF] 4. Browser Data        Safari/Chrome/Brave/Firefox caches, cookies, history
-  [ON]  5. System Maintenance  Flush DNS, periodic scripts, LaunchAgents audit
-  [OFF] 6. App Uninstaller     Remove apps and all associated data files
-  [OFF] 7. Orphaned Data       Find leftovers from uninstalled apps
+  [ON]  5. System Maintenance  Flush DNS, run periodic scripts, audit LaunchAgents
+  [OFF] 6. App Uninstaller     Remove an app and all its associated data files
+  [OFF] 7. Orphaned Data       Find leftovers from previously uninstalled apps
 
-Examples:
-  $(basename "$0")                 # Interactive mode
-  $(basename "$0") --dry-run       # Preview all changes
-  $(basename "$0") --dry-run --yes # Non-interactive preview
-  $(basename "$0") --yes           # Run with defaults, no prompts
+CONFIG
+  Persistent defaults live in ~/.config/mac-optimizer/config.toml.
+  CLI flags always override config values.
+
+    ${cmd} --init-config          # scaffold the config file
+    \$EDITOR \$(${cmd} --config-path)  # open it in your editor
+
+EXAMPLES
+  ${cmd}                    # Interactive TUI
+  ${cmd} --dry-run          # Preview all changes, no deletions
+  ${cmd} --dry-run --yes    # Non-interactive preview (safe for CI)
+  ${cmd} --yes              # Run with defaults, skip confirmation prompts
 EOF
 }
 
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      -n|--dry-run) DRY_RUN=1 ; shift ;;
-      -y|--yes)     AUTO_YES=1 ; shift ;;
-      -h|--help)    print_help ; exit 0 ;;
+      -n|--dry-run)      DRY_RUN=1  ; shift ;;
+      -y|--yes)          AUTO_YES=1 ; shift ;;
+      -h|--help)         print_help ; exit 0 ;;
+      --init-config)     config_init ; exit 0 ;;
+      --config-path)     printf "%s\n" "$CONFIG_PATH" ; exit 0 ;;
       *)
         printf "${RED}Unknown option: %s${NC}\n" "$1" >&2
         print_help >&2
@@ -1460,7 +1566,8 @@ parse_args() {
 }
 
 main() {
-  parse_args "$@"
+  config_load   # apply ~/.config/mac-optimizer/config.toml first
+  parse_args "$@"  # CLI flags win
 
   # macOS only
   if [[ "$(uname -s)" != "Darwin" ]]; then
