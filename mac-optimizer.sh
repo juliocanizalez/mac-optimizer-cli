@@ -3,7 +3,7 @@
 # Usage: ./mac-optimizer.sh [--dry-run] [--yes] [--help]
 set -uo pipefail
 
-VERSION="1.2.0"
+VERSION="1.3.0"
 
 # ============================================================================
 # [B] GLOBAL STATE
